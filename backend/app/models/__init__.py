@@ -1,0 +1,177 @@
+"""SQLAlchemy ORM models for the RAG Chat Agent.
+
+Entities and the isolation model:
+- User belongs to zero or more Teams via Membership.
+- KnowledgeBase (KB) is owned by exactly one User (personal) OR one Team (shared).
+- Document belongs to a KB; Chunk belongs to a Document and carries kb_id
+  (denormalized) as the authoritative isolation key for retrieval.
+"""
+from __future__ import annotations
+
+import enum
+import uuid
+from datetime import datetime
+
+from pgvector.sqlalchemy import HALFVEC
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    Uuid,
+    func,
+)
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from backend.app.core.config import settings
+from backend.app.db.session import Base
+
+
+def _uuid_pk() -> Mapped[uuid.UUID]:
+    return mapped_column(primary_key=True, default=uuid.uuid4)
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class User(TimestampMixin, Base):
+    __tablename__ = "users"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True, nullable=False)
+    hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255))
+
+    memberships: Mapped[list["Membership"]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class Team(TimestampMixin, Base):
+    __tablename__ = "teams"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+
+    memberships: Mapped[list["Membership"]] = relationship(
+        back_populates="team", cascade="all, delete-orphan"
+    )
+
+
+class Membership(TimestampMixin, Base):
+    __tablename__ = "memberships"
+    __table_args__ = (UniqueConstraint("user_id", "team_id", name="uq_membership_user_team"),)
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    team_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(50), default="member", nullable=False)
+
+    user: Mapped[User] = relationship(back_populates="memberships")
+    team: Mapped[Team] = relationship(back_populates="memberships")
+
+
+class KnowledgeBase(TimestampMixin, Base):
+    __tablename__ = "knowledge_bases"
+    __table_args__ = (
+        CheckConstraint(
+            "(owner_user_id IS NOT NULL) <> (owner_team_id IS NOT NULL)",
+            name="ck_kb_single_owner",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    owner_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    owner_team_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("teams.id", ondelete="CASCADE"), index=True
+    )
+
+    documents: Mapped[list["Document"]] = relationship(
+        back_populates="kb", cascade="all, delete-orphan"
+    )
+
+
+class DocumentStatus(str, enum.Enum):
+    pending = "pending"
+    processing = "processing"
+    ready = "ready"
+    failed = "failed"
+
+
+class Document(TimestampMixin, Base):
+    __tablename__ = "documents"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    kb_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    status: Mapped[DocumentStatus] = mapped_column(
+        String(20), default=DocumentStatus.pending, nullable=False
+    )
+    error: Mapped[str | None] = mapped_column(Text)
+    chunk_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
+    kb: Mapped[KnowledgeBase] = relationship(back_populates="documents")
+    chunks: Mapped[list["Chunk"]] = relationship(
+        back_populates="document", cascade="all, delete-orphan"
+    )
+
+
+class Chunk(TimestampMixin, Base):
+    __tablename__ = "chunks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    # kb_id is denormalized here so retrieval can filter by it directly.
+    kb_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("documents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(HALFVEC(settings.embedding_dim), nullable=False)
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
+
+    document: Mapped[Document] = relationship(back_populates="chunks")
+
+
+class ChatSession(TimestampMixin, Base):
+    __tablename__ = "chat_sessions"
+
+    # id doubles as the LangGraph checkpointer thread_id.
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    title: Mapped[str | None] = mapped_column(String(512))
+    # The KBs this session's agent may search (already validated at creation).
+    kb_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), default=list, nullable=False)
+
+
+__all__ = [
+    "User",
+    "Team",
+    "Membership",
+    "KnowledgeBase",
+    "Document",
+    "DocumentStatus",
+    "Chunk",
+    "ChatSession",
+]
