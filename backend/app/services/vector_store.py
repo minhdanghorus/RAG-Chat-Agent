@@ -85,6 +85,9 @@ class PgVectorStore(VectorStore):
         stmt = (
             select(Chunk, distance.label("distance"))
             .where(Chunk.kb_id.in_(list(kb_ids)))
+            # Skip chunks awaiting re-embedding (NULL embedding) so a switch in
+            # progress degrades to partial/empty results instead of erroring.
+            .where(Chunk.embedding.isnot(None))
             .order_by(distance)
             .limit(k)
         )

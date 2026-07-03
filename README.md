@@ -5,8 +5,9 @@ agent grounded in those documents, with strict **per-user / per-team isolation**
 so it can grow into a tool/MCP-using agent — retrieval is the agent's first tool.
 
 - **Backend:** FastAPI + LangGraph (retrieval-as-tool agent loop)
-- **Data:** Postgres 18 + pgvector (`halfvec(3072)` embeddings, HNSW cosine index) — one
-  store for RBAC, vectors, and conversation history (LangGraph Postgres checkpointer)
+- **Data:** Postgres 18 + pgvector (`halfvec` embeddings, HNSW cosine index; dimension
+  tracks the configured embedding model) — one store for RBAC, vectors, and conversation
+  history (LangGraph Postgres checkpointer)
 - **LLM/embeddings:** Green Node (VNG MaaS), OpenAI-compatible
 - **Frontend:** Next.js / React (login, KB management, streaming chat with citations)
 
@@ -76,10 +77,35 @@ npm run dev        # http://localhost:3000
 |---|---|
 | `LLM_BASE_URL` / `LLM_API_KEY` | Green Node gateway (OpenAI-compatible) |
 | `LLM_MODEL` | Chat model (default `google/gemma-4-31b-it`) |
-| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | `gemini/gemini-embedding-001`, `3072` |
+| `EMBEDDING_MODEL` / `EMBEDDING_DIM` | Active embedding model + its vector dimension (e.g. `gemini/gemini-embedding-001`, `3072` or `baai/bge-m3`, `1024`) |
 | `DATABASE_URL` | `postgresql+psycopg://rag:rag_password@localhost:5434/rag_chat` |
 | `JWT_SECRET` | Signing key for access tokens |
 | `CORS_ORIGINS` | Allowed frontend origins |
+
+### Switching the embedding model
+
+Stored embeddings are **model- and dimension-specific** — vectors from different
+models (or dimensions) cannot be compared, and pgvector's column/index is fixed to
+one dimension. So changing `EMBEDDING_MODEL` / `EMBEDDING_DIM` is not a pure config
+change. The database records the model that produced its vectors (`embedding_config`
+registry) and validates it against your settings:
+
+- On a mismatch, the **app refuses to start** and document **uploads return HTTP 409**,
+  each naming the configured vs. registered model and the remedy below.
+
+To switch:
+
+```bash
+# 1. Edit .env: set EMBEDDING_MODEL / EMBEDDING_DIM to the new model
+# 2. Re-embed existing chunks from their stored text and update the registry:
+uv run python -m backend.app.cli reembed
+```
+
+`reembed` re-embeds every chunk from the `content` already in Postgres (no re-upload
+needed for a pure model swap), rebuilds the HNSW index, and is **idempotent/resumable**
+— if it is interrupted, just run it again. While it runs, retrieval degrades gracefully
+(chunks pending re-embed are skipped) rather than erroring. Changing chunking (not just
+the model) still requires re-uploading the documents.
 
 ## Testing
 

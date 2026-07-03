@@ -10,6 +10,7 @@ from backend.app.api.deps import CurrentUser, DbSession
 from backend.app.models import Document, DocumentStatus, KnowledgeBase
 from backend.app.schemas import DocumentOut
 from backend.app.services.access import can_manage_kb, can_read_kb
+from backend.app.services.embedding_config import check_settings_match
 from backend.app.services.ingestion import ingest_document
 from backend.app.services.parsing import is_supported
 
@@ -49,6 +50,11 @@ async def upload_document(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Not allowed to upload to this KB",
         )
+    # Refuse ingestion while the configured embedding model disagrees with the
+    # database, so we surface the mismatch here instead of failing on insert.
+    mismatch = check_settings_match(db)
+    if mismatch is not None:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=mismatch.message)
     if not file.filename or not is_supported(file.filename):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,

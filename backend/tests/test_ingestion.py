@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from backend.app.core.config import settings
 from backend.app.db.session import SessionLocal
 from backend.app.models import Chunk
 from backend.tests.conftest import auth_headers
@@ -45,14 +46,14 @@ def test_upload_and_ingest_txt(client: TestClient) -> None:
     assert doc["status"] == "ready", doc
     assert doc["chunk_count"] >= 1
 
-    # Chunks carry the kb_id and 3072-dim embeddings.
+    # Chunks carry the kb_id and embeddings of the configured dimension.
     with SessionLocal() as db:
         n = db.scalar(select(func.count()).select_from(Chunk).where(Chunk.kb_id == kb_id))
         assert n == doc["chunk_count"]
         dim = db.scalar(
             select(func.vector_dims(Chunk.embedding)).where(Chunk.kb_id == kb_id).limit(1)
         )
-        assert dim == 3072
+        assert dim == settings.embedding_dim
 
 
 def test_unsupported_file_rejected(client: TestClient) -> None:

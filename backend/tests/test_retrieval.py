@@ -14,7 +14,7 @@ from backend.app.agent.graph import retrieve_kb
 from backend.app.agent.retrieval import retrieve
 from backend.app.core.config import settings
 from backend.app.db.session import SessionLocal
-from backend.app.models import Document, DocumentStatus, KnowledgeBase, User
+from backend.app.models import Chunk, Document, DocumentStatus, KnowledgeBase, User
 from backend.app.services.vector_store import vector_store
 
 DIM = settings.embedding_dim
@@ -71,6 +71,54 @@ def test_retrieve_citations_scoped() -> None:
         ctx = retrieve(db, [kb.id], "gamma", k=3)
         assert ctx.citations
         assert all(c["kb_id"] == str(kb.id) for c in ctx.citations)
+
+
+def test_search_skips_null_embeddings() -> None:
+    """Chunks awaiting re-embedding (NULL embedding) must not be returned, and a
+    scope containing only such chunks yields an empty result rather than an error.
+
+    Cleans up its KBs so no NULL-embedding rows leak into the shared dev DB.
+    """
+    with SessionLocal() as db:
+        alice = db.scalar(select(User).where(User.email == "alice@vng.com.vn"))
+        kb = KnowledgeBase(name=f"N-{uuid.uuid4().hex[:6]}", owner_user_id=alice.id)
+        kb_empty = KnowledgeBase(name=f"NE-{uuid.uuid4().hex[:6]}", owner_user_id=alice.id)
+        db.add_all([kb, kb_empty])
+        db.flush()
+        try:
+            doc = Document(
+                kb_id=kb.id, filename="n.txt", content_type="text/plain",
+                status=DocumentStatus.processing,
+            )
+            db.add(doc)
+            db.flush()
+            # One embedded chunk, one still pending (NULL embedding).
+            db.add(Chunk(kb_id=kb.id, document_id=doc.id, chunk_index=0,
+                         content="embedded", embedding=_unit_vec(0)))
+            db.add(Chunk(kb_id=kb.id, document_id=doc.id, chunk_index=1,
+                         content="pending", embedding=None))
+
+            doc2 = Document(kb_id=kb_empty.id, filename="e.txt", content_type="text/plain",
+                            status=DocumentStatus.processing)
+            db.add(doc2)
+            db.flush()
+            db.add(Chunk(kb_id=kb_empty.id, document_id=doc2.id, chunk_index=0,
+                         content="pending only", embedding=None))
+            db.commit()
+
+            q = _unit_vec(0)
+            res = vector_store.search(db, kb_ids=[kb.id], query_embedding=q, k=5)
+            assert res, "the embedded chunk should be retrievable"
+            assert all(r.chunk.embedding is not None for r in res)
+            assert all(r.chunk.content != "pending" for r in res)
+
+            # A KB whose only chunk is pending returns nothing (no error).
+            assert vector_store.search(db, kb_ids=[kb_empty.id], query_embedding=q, k=5) == []
+        finally:
+            db.rollback()
+            db.delete(db.get(KnowledgeBase, kb.id))  # cascades to docs/chunks
+            db.delete(db.get(KnowledgeBase, kb_empty.id))
+            db.commit()
 
 
 def test_retrieve_tool_cannot_widen_scope() -> None:

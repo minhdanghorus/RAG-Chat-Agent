@@ -28,7 +28,6 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.app.core.config import settings
 from backend.app.db.session import Base
 
 
@@ -147,10 +146,38 @@ class Chunk(TimestampMixin, Base):
     )
     chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    embedding: Mapped[list[float]] = mapped_column(HALFVEC(settings.embedding_dim), nullable=False)
+    # Nullable: a NULL embedding marks a chunk awaiting (re-)embedding during a
+    # model switch (see services/reembed.py). The column's dimension is fixed by
+    # the DB schema and tracked in embedding_config, not bound here, so switching
+    # models is a migration/reembed concern rather than an import-time constant.
+    embedding: Mapped[list[float] | None] = mapped_column(HALFVEC(), nullable=True)
     meta: Mapped[dict] = mapped_column(JSONB, default=dict, nullable=False)
 
     document: Mapped[Document] = relationship(back_populates="chunks")
+
+
+class EmbeddingConfig(Base):
+    """Single-row registry of the embedding model that produced the stored vectors.
+
+    This is the database's own record of "what the vectors actually are", as
+    opposed to application settings, which express "what is desired". A mismatch
+    between the two is resolved by re-embedding (services/reembed.py). While a
+    switch is in progress, `pending_model`/`pending_dim` hold the target and
+    `model`/`dim` still describe the committed vectors, so mismatch validation
+    keeps signalling until the switch completes.
+    """
+
+    __tablename__ = "embedding_config"
+    __table_args__ = (CheckConstraint("id = 1", name="ck_embedding_config_singleton"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    dim: Mapped[int] = mapped_column(Integer, nullable=False)
+    pending_model: Mapped[str | None] = mapped_column(String(255))
+    pending_dim: Mapped[int | None] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
 
 
 class Agent(TimestampMixin, Base):
