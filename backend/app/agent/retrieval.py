@@ -23,12 +23,21 @@ class RetrievedContext:
     citations: list[dict]  # serializable Citation dicts
 
 
-def retrieve(db: Session, kb_ids: list[uuid.UUID], query: str, k: int = 5) -> RetrievedContext:
+def retrieve(
+    db: Session,
+    kb_ids: list[uuid.UUID],
+    query: str,
+    k: int = 5,
+    threshold: float = 0.0,
+) -> RetrievedContext:
     if not kb_ids:
         return RetrievedContext(formatted="No knowledge bases selected.", citations=[])
 
     qvec = embed_query(query)
     results = vector_store.search(db, kb_ids=kb_ids, query_embedding=qvec, k=k)
+    # Drop passages below the agent's similarity threshold (0.0 keeps all).
+    if threshold > 0.0:
+        results = [r for r in results if r.score >= threshold]
     if not results:
         return RetrievedContext(formatted="No relevant passages found.", citations=[])
 

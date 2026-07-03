@@ -16,6 +16,7 @@ from pgvector.sqlalchemy import HALFVEC
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     String,
@@ -152,6 +153,55 @@ class Chunk(TimestampMixin, Base):
     document: Mapped[Document] = relationship(back_populates="chunks")
 
 
+class Agent(TimestampMixin, Base):
+    """A configurable assistant: instruction, KB scope, and model/retrieval tuning.
+
+    Owned by a single user. Sessions hold a live reference (see ChatSession.agent_id),
+    so edits here apply to future messages in existing sessions. The KB set is
+    validated against the owner's access on every write (services/access.py).
+    """
+
+    __tablename__ = "agents"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    # Retrieval scope: KBs the owner could read at write time (trusted as stored).
+    kb_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), default=list, nullable=False)
+    model_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    temperature: Mapped[float] = mapped_column(Float, nullable=False)
+    retrieval_top_k: Mapped[int] = mapped_column(Integer, nullable=False)
+    retrieval_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+
+    access_grants: Mapped[list["AgentAccess"]] = relationship(
+        back_populates="agent", cascade="all, delete-orphan"
+    )
+
+
+class AgentAccess(TimestampMixin, Base):
+    """A per-user grant: the granted user may use the agent (owner grants/revokes)."""
+
+    __tablename__ = "agent_access"
+    __table_args__ = (
+        UniqueConstraint("agent_id", "user_id", name="uq_agent_access_agent_user"),
+    )
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    agent_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("agents.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
+    )
+
+    agent: Mapped[Agent] = relationship(back_populates="access_grants")
+    user: Mapped[User] = relationship()
+
+
 class ChatSession(TimestampMixin, Base):
     __tablename__ = "chat_sessions"
 
@@ -161,7 +211,13 @@ class ChatSession(TimestampMixin, Base):
         ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
     )
     title: Mapped[str | None] = mapped_column(String(512))
-    # The KBs this session's agent may search (already validated at creation).
+    # Live reference to the agent driving this session (resolved at message time).
+    # RESTRICT: an agent cannot be deleted while a session still references it.
+    agent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("agents.id", ondelete="RESTRICT"), index=True
+    )
+    # Legacy per-session KB selection. Kept for rollback; no longer read (agent
+    # KBs now define retrieval scope). Dropped in a later cleanup change.
     kb_ids: Mapped[list[uuid.UUID]] = mapped_column(ARRAY(Uuid), default=list, nullable=False)
 
 
@@ -174,4 +230,6 @@ __all__ = [
     "DocumentStatus",
     "Chunk",
     "ChatSession",
+    "Agent",
+    "AgentAccess",
 ]

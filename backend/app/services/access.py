@@ -13,7 +13,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_user_team_ids
-from backend.app.models import KnowledgeBase, User
+from backend.app.models import Agent, AgentAccess, KnowledgeBase, User
 
 
 def accessible_kbs(db: Session, user: User) -> list[KnowledgeBase]:
@@ -60,3 +60,42 @@ def resolve_selected_kb_ids(
     if forbidden:
         raise PermissionError(f"KBs not accessible: {sorted(str(x) for x in forbidden)}")
     return list(requested_set)
+
+
+# --- Agent access ---
+def accessible_agents(db: Session, user: User) -> list[Agent]:
+    """Agents the user may use: those they own plus those granted to them."""
+    conditions = [
+        Agent.owner_user_id == user.id,
+        Agent.id.in_(select(AgentAccess.agent_id).where(AgentAccess.user_id == user.id)),
+    ]
+    return list(db.scalars(select(Agent).where(or_(*conditions))).all())
+
+
+def can_use_agent(db: Session, user: User, agent: Agent) -> bool:
+    """Use = start sessions / chat. Owner or an explicit grant."""
+    if agent.owner_user_id == user.id:
+        return True
+    grant = db.scalar(
+        select(AgentAccess).where(
+            AgentAccess.agent_id == agent.id, AgentAccess.user_id == user.id
+        )
+    )
+    return grant is not None
+
+
+def can_manage_agent(db: Session, user: User, agent: Agent) -> bool:
+    """Manage = edit / delete / grant. Owner only."""
+    return agent.owner_user_id == user.id
+
+
+def validate_agent_kb_ids(
+    db: Session, owner: User, kb_ids: Sequence[uuid.UUID]
+) -> list[uuid.UUID]:
+    """Every KB attached to an agent must be readable by its owner.
+
+    Reuses resolve_selected_kb_ids so the whole write is rejected (PermissionError)
+    if any id is outside the owner's access — an agent can never republish a KB
+    its owner cannot read.
+    """
+    return resolve_selected_kb_ids(db, owner, kb_ids)

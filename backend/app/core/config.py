@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     llm_api_key: str
     llm_model: str = "google/gemma-4-31b-it"
 
+    # Agent defaults (used when an agent is created without explicit settings).
+    default_temperature: float = 0.2
+    default_retrieval_top_k: int = 5
+    default_retrieval_threshold: float = 0.0
+
     # Embeddings
     embedding_model: str = "gemini/gemini-embedding-001"
     embedding_dim: int = 3072

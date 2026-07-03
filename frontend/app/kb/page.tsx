@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Nav from "@/app/components/Nav";
 import {
   createKB,
+  deleteDoc,
   deleteKB,
   Doc,
   getToken,
@@ -69,6 +70,13 @@ export default function KBPage() {
     await deleteKB(kb.id);
     if (selected?.id === kb.id) setSelected(null);
     refreshKbs();
+  }
+
+  async function onDeleteDoc(doc: Doc) {
+    if (!selected) return;
+    if (!confirm(`Delete "${doc.filename}"? This removes it from retrieval.`)) return;
+    await deleteDoc(selected.id, doc.id);
+    refreshDocs(selected);
   }
 
   return (
@@ -149,10 +157,15 @@ export default function KBPage() {
                 >
                   <div className="row" style={{ justifyContent: "space-between" }}>
                     <span>{d.filename}</span>
-                    <span className={`badge ${d.status}`}>
-                      {d.status}
-                      {d.status === "ready" ? ` · ${d.chunk_count} chunks` : ""}
-                    </span>
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className={`badge ${d.status}`}>
+                        {d.status}
+                        {d.status === "ready" ? ` · ${d.chunk_count} chunks` : ""}
+                      </span>
+                      <button className="secondary" onClick={() => onDeleteDoc(d)}>
+                        ✕
+                      </button>
+                    </div>
                   </div>
                   {d.error && (
                     <div style={{ color: "#ff7676", fontSize: 13, marginTop: 6 }}>

@@ -54,8 +54,37 @@ export interface Doc {
 export interface Session {
   id: string;
   title: string | null;
-  kb_ids: string[];
+  agent_id: string | null;
+  agent_name: string | null;
   created_at: string;
+}
+export interface Agent {
+  id: string;
+  owner_user_id: string;
+  name: string;
+  description: string | null;
+  system_prompt: string;
+  kb_ids: string[];
+  model_name: string;
+  temperature: number;
+  retrieval_top_k: number;
+  retrieval_threshold: number;
+  created_at: string;
+}
+export interface AgentInput {
+  name: string;
+  system_prompt: string;
+  description?: string | null;
+  kb_ids?: string[];
+  model_name?: string | null;
+  temperature?: number | null;
+  retrieval_top_k?: number | null;
+  retrieval_threshold?: number | null;
+}
+export interface AgentAccessEntry {
+  user_id: string;
+  email: string;
+  display_name: string | null;
 }
 export interface Citation {
   document_id: string;
@@ -112,17 +141,90 @@ export async function uploadDoc(kbId: string, file: File): Promise<Doc> {
     }),
   );
 }
+export async function deleteDoc(kbId: string, docId: string): Promise<void> {
+  await handle(
+    await fetch(`${API_BASE}/kb/${kbId}/documents/${docId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }),
+  );
+}
+
+// --- Agents ---
+export async function listAgents(): Promise<Agent[]> {
+  return handle(await fetch(`${API_BASE}/agents`, { headers: authHeaders() }));
+}
+export async function createAgent(input: AgentInput): Promise<Agent> {
+  return handle(
+    await fetch(`${API_BASE}/agents`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+export async function updateAgent(
+  id: string,
+  input: Partial<AgentInput>,
+): Promise<Agent> {
+  return handle(
+    await fetch(`${API_BASE}/agents/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify(input),
+    }),
+  );
+}
+export async function deleteAgent(id: string): Promise<void> {
+  await handle(
+    await fetch(`${API_BASE}/agents/${id}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }),
+  );
+}
+export async function listAgentAccess(id: string): Promise<AgentAccessEntry[]> {
+  return handle(
+    await fetch(`${API_BASE}/agents/${id}/access`, { headers: authHeaders() }),
+  );
+}
+export async function grantAgentAccess(
+  id: string,
+  email: string,
+): Promise<AgentAccessEntry> {
+  return handle(
+    await fetch(`${API_BASE}/agents/${id}/access`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ email }),
+    }),
+  );
+}
+export async function revokeAgentAccess(
+  id: string,
+  userId: string,
+): Promise<void> {
+  await handle(
+    await fetch(`${API_BASE}/agents/${id}/access/${userId}`, {
+      method: "DELETE",
+      headers: authHeaders(),
+    }),
+  );
+}
 
 // --- Chat ---
 export async function listSessions(): Promise<Session[]> {
   return handle(await fetch(`${API_BASE}/chat/sessions`, { headers: authHeaders() }));
 }
-export async function createSession(kb_ids: string[], title?: string): Promise<Session> {
+export async function createSession(
+  agent_id: string,
+  title?: string,
+): Promise<Session> {
   return handle(
     await fetch(`${API_BASE}/chat/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({ kb_ids, title: title || null }),
+      body: JSON.stringify({ agent_id, title: title || null }),
     }),
   );
 }

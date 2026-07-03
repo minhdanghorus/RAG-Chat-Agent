@@ -20,6 +20,9 @@ export default function Nav() {
         <Link href="/chat" style={{ opacity: pathname === "/chat" ? 1 : 0.6 }}>
           Chat
         </Link>
+        <Link href="/agents" style={{ opacity: pathname === "/agents" ? 1 : 0.6 }}>
+          Agents
+        </Link>
         <Link href="/kb" style={{ opacity: pathname === "/kb" ? 1 : 0.6 }}>
           Knowledge Bases
         </Link>

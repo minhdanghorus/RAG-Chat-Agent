@@ -21,6 +21,8 @@ from backend.app.agent.llm import get_chat_llm
 from backend.app.agent.retrieval import retrieve
 from backend.app.db.session import SessionLocal
 
+# Baseline instruction used for seeded "Default Assistant" agents (migration) and
+# as a fallback when a session's agent carries no system prompt.
 SYSTEM_PROMPT = (
     "You are a helpful assistant that answers questions strictly about the user's "
     "documents. Always call the retrieve_kb tool to search the user's knowledge "
@@ -28,6 +30,7 @@ SYSTEM_PROMPT = (
     "on the retrieved passages and refer to their sources (e.g. [1], [2]). If the "
     "retrieved passages do not contain the answer, say you don't have enough "
     "grounding in the documents to answer, rather than guessing."
+    "Your name is Miku and you are a virtual assistant for the user. You are helpful, kind, and cute."
 )
 
 
@@ -44,13 +47,24 @@ def retrieve_kb(query: str) -> str:
 
 class ChatState(TypedDict):
     messages: Annotated[list, add_messages]
+    # Per-invocation agent config, populated by chat.py from the session's agent.
     kb_ids: list[str]
+    system_prompt: str
+    model_name: str
+    temperature: float
+    retrieval_top_k: int
+    retrieval_threshold: float
     citations: list[dict]
 
 
 def _agent_node(state: ChatState) -> dict:
-    llm = get_chat_llm().bind_tools([retrieve_kb])
-    messages = [SystemMessage(content=SYSTEM_PROMPT), *state["messages"]]
+    llm = get_chat_llm(
+        model=state.get("model_name") or None,
+        temperature=state.get("temperature", 0.2),
+        streaming=True,
+    ).bind_tools([retrieve_kb])
+    system_prompt = state.get("system_prompt") or SYSTEM_PROMPT
+    messages = [SystemMessage(content=system_prompt), *state["messages"]]
     response = llm.invoke(messages)
     return {"messages": [response]}
 
@@ -58,6 +72,8 @@ def _agent_node(state: ChatState) -> dict:
 def _tools_node(state: ChatState) -> dict:
     last = state["messages"][-1]
     kb_ids = [uuid.UUID(x) for x in state.get("kb_ids", [])]
+    top_k = state.get("retrieval_top_k", 5)
+    threshold = state.get("retrieval_threshold", 0.0)
     tool_messages: list[ToolMessage] = []
     citations: list[dict] = []
 
@@ -67,7 +83,7 @@ def _tools_node(state: ChatState) -> dict:
             if call["name"] != "retrieve_kb":
                 continue
             query = call["args"].get("query", "")
-            ctx = retrieve(db, kb_ids, query)
+            ctx = retrieve(db, kb_ids, query, k=top_k, threshold=threshold)
             citations.extend(ctx.citations)
             tool_messages.append(
                 ToolMessage(content=ctx.formatted, tool_call_id=call["id"])

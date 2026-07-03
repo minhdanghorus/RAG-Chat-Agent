@@ -1,12 +1,12 @@
 """Tests for the chat-retrieval capability.
 
-The grounded-conversation test exercises the live LLM (tool-calling + answer)
-and the pgvector retrieval path end to end.
+Sessions are created from an agent (not a KB list). The grounded-conversation
+test exercises the live LLM (tool-calling + answer) and the pgvector retrieval
+path end to end, streaming genuine tokens.
 """
 from __future__ import annotations
 
 import json
-import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +34,18 @@ def _kb_with_doc(client: TestClient, headers: dict[str, str], name: str) -> str:
     return kb_id
 
 
+def _create_agent(
+    client: TestClient, headers: dict[str, str], kb_ids: list[str], name: str = "Bot"
+) -> str:
+    resp = client.post(
+        "/agents",
+        json={"name": name, "system_prompt": "Answer from the docs.", "kb_ids": kb_ids},
+        headers=headers,
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
 def _parse_sse(text: str) -> tuple[str, list]:
     tokens, citations = [], []
     event = None
@@ -49,31 +61,42 @@ def _parse_sse(text: str) -> tuple[str, list]:
     return "".join(tokens), citations
 
 
-def test_create_session_rejects_inaccessible_kb(client: TestClient) -> None:
-    bob = auth_headers(client, "bob@vng.com.vn")
+def test_create_session_rejects_inaccessible_agent(client: TestClient) -> None:
     alice = auth_headers(client, "alice@vng.com.vn")
-    kb_id = client.post("/kb", json={"name": "Alice KB"}, headers=alice).json()["id"]
-    resp = client.post("/chat/sessions", json={"kb_ids": [kb_id]}, headers=bob)
+    bob = auth_headers(client, "bob@vng.com.vn")
+    agent_id = _create_agent(client, alice, [], name="Alice private bot")
+    resp = client.post("/chat/sessions", json={"agent_id": agent_id}, headers=bob)
     assert resp.status_code == 403
 
 
 def test_session_ownership_isolation(client: TestClient) -> None:
     alice = auth_headers(client, "alice@vng.com.vn")
     bob = auth_headers(client, "bob@vng.com.vn")
-    kb_id = client.post("/kb", json={"name": "A"}, headers=alice).json()["id"]
-    sid = client.post("/chat/sessions", json={"kb_ids": [kb_id]}, headers=alice).json()["id"]
+    agent_id = _create_agent(client, alice, [])
+    sid = client.post(
+        "/chat/sessions", json={"agent_id": agent_id}, headers=alice
+    ).json()["id"]
     # Bob cannot read Alice's session.
     assert client.get(f"/chat/sessions/{sid}/messages", headers=bob).status_code == 404
     # Bob's session list does not include it.
     assert all(s["id"] != sid for s in client.get("/chat/sessions", headers=bob).json())
 
 
+def test_session_reports_agent(client: TestClient) -> None:
+    alice = auth_headers(client, "alice@vng.com.vn")
+    agent_id = _create_agent(client, alice, [], name="Named bot")
+    s = client.post("/chat/sessions", json={"agent_id": agent_id}, headers=alice).json()
+    assert s["agent_id"] == agent_id
+    assert s["agent_name"] == "Named bot"
+
+
 @pytest.mark.live
 def test_grounded_conversation_with_citations(client: TestClient) -> None:
     h = auth_headers(client, "alice@vng.com.vn")
     kb_id = _kb_with_doc(client, h, "Zephyr KB")
+    agent_id = _create_agent(client, h, [kb_id], name="Zephyr bot")
     sid = client.post(
-        "/chat/sessions", json={"kb_ids": [kb_id], "title": "Zephyr"}, headers=h
+        "/chat/sessions", json={"agent_id": agent_id, "title": "Zephyr"}, headers=h
     ).json()["id"]
 
     resp = client.post(

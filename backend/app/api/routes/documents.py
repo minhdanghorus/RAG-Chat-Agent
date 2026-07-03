@@ -69,3 +69,25 @@ async def upload_document(
     # Ingest asynchronously so the request returns immediately.
     background.add_task(ingest_document, doc.id, file.filename, data)
     return doc
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_document(
+    kb_id: uuid.UUID,
+    document_id: uuid.UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> None:
+    kb = _load_kb(db, current_user, kb_id)
+    if not can_manage_kb(db, current_user, kb):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not allowed to delete documents in this KB",
+        )
+    doc = db.get(Document, document_id)
+    if doc is None or doc.kb_id != kb_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found in this KB"
+        )
+    db.delete(doc)  # cascades to chunks (and their embeddings)
+    db.commit()

@@ -4,12 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Nav from "@/app/components/Nav";
 import {
+  Agent,
   Citation,
   createSession,
   getHistory,
   getToken,
-  KB,
-  listKBs,
+  listAgents,
   listSessions,
   Session,
   streamMessage,
@@ -23,13 +23,13 @@ interface Msg {
 
 export default function ChatPage() {
   const router = useRouter();
-  const [kbs, setKbs] = useState<KB[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [active, setActive] = useState<Session | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [picker, setPicker] = useState<Set<string>>(new Set());
+  const [pickedAgent, setPickedAgent] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -38,8 +38,8 @@ export default function ChatPage() {
   }, [router]);
 
   const refresh = useCallback(async () => {
-    const [k, s] = await Promise.all([listKBs(), listSessions()]);
-    setKbs(k);
+    const [a, s] = await Promise.all([listAgents(), listSessions()]);
+    setAgents(a);
     setSessions(s);
   }, []);
 
@@ -62,20 +62,12 @@ export default function ChatPage() {
     setCreating(true);
     setActive(null);
     setMessages([]);
-    setPicker(new Set());
-  }
-
-  function togglePick(id: string) {
-    setPicker((prev) => {
-      const next = new Set(prev);
-      next.has(id) ? next.delete(id) : next.add(id);
-      return next;
-    });
+    setPickedAgent(null);
   }
 
   async function confirmNew() {
-    if (picker.size === 0) return;
-    const s = await createSession([...picker]);
+    if (!pickedAgent) return;
+    const s = await createSession(pickedAgent);
     await refresh();
     setCreating(false);
     setActive(s);
@@ -123,8 +115,6 @@ export default function ChatPage() {
     }
   }
 
-  const kbName = (id: string) => kbs.find((k) => k.id === id)?.name || id.slice(0, 8);
-
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column" }}>
       <Nav />
@@ -155,7 +145,7 @@ export default function ChatPage() {
             >
               <div style={{ fontSize: 14 }}>{s.title || "Untitled chat"}</div>
               <div className="muted" style={{ fontSize: 12 }}>
-                {s.kb_ids.map(kbName).join(", ")}
+                {s.agent_name || "Unknown agent"}
               </div>
             </div>
           ))}
@@ -165,29 +155,44 @@ export default function ChatPage() {
         <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
           {creating ? (
             <div style={{ padding: 24, overflowY: "auto" }}>
-              <h3>Select knowledge base(s) for this chat</h3>
-              {kbs.length === 0 && (
+              <h3>Pick an agent for this chat</h3>
+              {agents.length === 0 && (
                 <p className="muted">
-                  No knowledge bases. Create one under “Knowledge Bases” first.
+                  No agents available. Create one under “Agents” first.
                 </p>
               )}
-              {kbs.map((k) => (
+              {agents.map((a) => (
                 <label
-                  key={k.id}
+                  key={a.id}
                   className="card"
-                  style={{ display: "flex", gap: 10, padding: 12, marginBottom: 8 }}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: 12,
+                    marginBottom: 8,
+                    cursor: "pointer",
+                    borderColor:
+                      pickedAgent === a.id ? "var(--accent)" : "var(--border)",
+                  }}
                 >
                   <input
-                    type="checkbox"
+                    type="radio"
+                    name="agent"
                     style={{ width: "auto" }}
-                    checked={picker.has(k.id)}
-                    onChange={() => togglePick(k.id)}
+                    checked={pickedAgent === a.id}
+                    onChange={() => setPickedAgent(a.id)}
                   />
-                  <span>{k.name}</span>
-                  <span className="badge">{k.owner_team_id ? "team" : "personal"}</span>
+                  <div>
+                    <div>{a.name}</div>
+                    {a.description && (
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        {a.description}
+                      </div>
+                    )}
+                  </div>
                 </label>
               ))}
-              <button disabled={picker.size === 0} onClick={confirmNew}>
+              <button disabled={!pickedAgent} onClick={confirmNew}>
                 Start chat
               </button>
             </div>
@@ -197,6 +202,16 @@ export default function ChatPage() {
             </div>
           ) : (
             <>
+              <div
+                className="muted"
+                style={{
+                  padding: "10px 24px",
+                  borderBottom: "1px solid var(--border)",
+                  fontSize: 13,
+                }}
+              >
+                Agent: {active.agent_name || "Unknown agent"}
+              </div>
               <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 24 }}>
                 {messages.map((m, i) => (
                   <div key={i} style={{ marginBottom: 18 }}>

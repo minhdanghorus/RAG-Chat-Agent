@@ -15,6 +15,7 @@ node_modules/
 .next/
 out/
 frontend/.env.local
+*.tsbuildinfo
 
 # Misc
 .DS_Store
